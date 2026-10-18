@@ -35,7 +35,7 @@ import java.util.Scanner;
 public class ClientMain {
 
     private static final String SERVER_HOST =
-            "127.0.0.1";
+            System.getProperty("server.host", "10.148.92.193");
 
     private static final int SERVER_PORT =
             5000;
@@ -1016,19 +1016,22 @@ public class ClientMain {
 
             case Protocol.CHAT:
 
-                if (parts.length >= 5) {
+                // Format mới: CHAT|room|messageId|username|displayName|content
+                if (parts.length >= 6) {
 
                     String room =
                             parts[1];
 
-                    String username =
-                            parts[2];
+                    // parts[2] = messageId (bỏ qua trong console client)
 
-                    String displayName =
+                    String username =
                             parts[3];
 
-                    String message =
+                    String displayName =
                             parts[4];
+
+                    String message =
+                            parts[5];
 
 
                     System.out.println(

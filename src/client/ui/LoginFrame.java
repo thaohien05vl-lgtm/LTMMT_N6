@@ -60,16 +60,29 @@ public class LoginFrame extends JFrame {
         setLocationRelativeTo(null);
 
         // Đóng ứng dụng sẽ đóng ClientConnection dùng chung.
-        addWindowListener(new WindowAdapter() {
-
-            @Override
-            public void windowClosing(WindowEvent e) {
-
-                controller.shutdown();
-            }
-        });
+        addWindowListener(new WindowCloseListener(controller));
 
         initComponents();
+
+        AuthUI.addThemeListener(() -> {
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                AuthUI.refreshContainer(this);
+            });
+        });
+    }
+
+    private static final class WindowCloseListener extends WindowAdapter {
+
+        private final AuthController controller;
+
+        WindowCloseListener(AuthController controller) {
+            this.controller = controller;
+        }
+
+        @Override
+        public void windowClosing(WindowEvent e) {
+            controller.shutdown();
+        }
     }
 
     // ==========================================================
@@ -93,13 +106,18 @@ public class LoginFrame extends JFrame {
                 )
         );
 
-        // Tiêu đề.
-        JLabel brand = AuthUI.subtitle(
-                "GROUP CHAT NETWORK"
-        );
+        // Hàng nút chuyển đổi theme Sáng / Tối phía trên cùng
+        JPanel topBar = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 0, 0));
+        topBar.setOpaque(false);
+        topBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        topBar.add(AuthUI.createThemeToggleButton(this));
+        card.add(topBar);
 
-        brand.setForeground(
-                AuthUI.ACCENT_COLOR
+        card.add(Box.createVerticalStrut(10));
+
+        // Tiêu đề.
+        JLabel brand = AuthUI.brand(
+                "GROUP CHAT NETWORK"
         );
 
         JLabel title = AuthUI.title(
@@ -211,19 +229,33 @@ public class LoginFrame extends JFrame {
 
         card.add(Box.createVerticalStrut(20));
 
-        JLabel footer = AuthUI.subtitle(
-                "Kết nối • Trò chuyện • Chia sẻ"
+        JLabel footer = new AuthUI.DynamicLabel(
+                "Kết nối • Trò chuyện • Chia sẻ",
+                AuthUI.LabelKind.MUTED
         );
 
-        footer.setForeground(
-                new Color(143, 153, 181)
+        footer.setFont(
+                AuthUI.font(java.awt.Font.PLAIN, 12)
         );
 
         footer.setHorizontalAlignment(
                 SwingConstants.CENTER
         );
 
+        footer.setAlignmentX(0.5f);
+
         card.add(footer);
+
+        JLabel securityBadge = new AuthUI.DynamicLabel(
+                "Bảo mật mã hóa SHA-256 (256-bit)",
+                AuthUI.LabelKind.SECURITY
+        );
+        securityBadge.setFont(AuthUI.font(java.awt.Font.PLAIN, 11));
+        securityBadge.setAlignmentX(0.5f);
+        securityBadge.setHorizontalAlignment(SwingConstants.CENTER);
+
+        card.add(Box.createVerticalStrut(8));
+        card.add(securityBadge);
 
         root.add(card);
 

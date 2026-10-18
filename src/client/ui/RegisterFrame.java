@@ -62,16 +62,29 @@ public class RegisterFrame extends JFrame {
         setLocationRelativeTo(null);
 
         // Đóng cửa sổ đăng ký thì quay về đăng nhập.
-        addWindowListener(new WindowAdapter() {
-
-            @Override
-            public void windowClosing(WindowEvent e) {
-
-                controller.returnToLogin();
-            }
-        });
+        addWindowListener(new WindowCloseListener(controller));
 
         initComponents();
+
+        AuthUI.addThemeListener(() -> {
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                AuthUI.refreshContainer(this);
+            });
+        });
+    }
+
+    private static final class WindowCloseListener extends WindowAdapter {
+
+        private final AuthController controller;
+
+        WindowCloseListener(AuthController controller) {
+            this.controller = controller;
+        }
+
+        @Override
+        public void windowClosing(WindowEvent e) {
+            controller.returnToLogin();
+        }
     }
 
     // ==========================================================
@@ -95,12 +108,17 @@ public class RegisterFrame extends JFrame {
                 )
         );
 
-        JLabel brand = AuthUI.subtitle(
-                "GROUP CHAT NETWORK"
-        );
+        // Hàng nút chuyển đổi theme Sáng / Tối phía trên cùng
+        JPanel topBar = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 0, 0));
+        topBar.setOpaque(false);
+        topBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        topBar.add(AuthUI.createThemeToggleButton(this));
+        card.add(topBar);
 
-        brand.setForeground(
-                AuthUI.ACCENT_COLOR
+        card.add(Box.createVerticalStrut(10));
+
+        JLabel brand = AuthUI.brand(
+                "GROUP CHAT NETWORK"
         );
 
         JLabel title = AuthUI.title(
@@ -240,6 +258,17 @@ public class RegisterFrame extends JFrame {
         });
 
         card.add(backButton);
+
+        JLabel securityBadge = new AuthUI.DynamicLabel(
+                "Mật khẩu được băm và bảo vệ bằng thuật toán SHA-256",
+                AuthUI.LabelKind.SECURITY
+        );
+        securityBadge.setFont(AuthUI.font(java.awt.Font.PLAIN, 11));
+        securityBadge.setAlignmentX(0.5f);
+        securityBadge.setHorizontalAlignment(SwingConstants.CENTER);
+
+        card.add(Box.createVerticalStrut(10));
+        card.add(securityBadge);
 
         root.add(card);
 

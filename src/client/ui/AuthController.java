@@ -58,6 +58,13 @@ public class AuthController
     // Trạng thái đăng nhập phía Client.
     private boolean authenticated = false;
 
+    // Lưu thông tin đăng nhập thành công để tự động kết nối lại khi mất mạng
+    private String savedUsername = "";
+    private String savedEncodedPassword = "";
+    private javax.swing.Timer reconnectTimer;
+    private boolean isReconnecting = false;
+    private int reconnectAttempts = 0;
+
     // Khi chưa có ChatFrame, tạm giữ dữ liệu nhận được sau login.
     private final List<String> pendingMessages =
             new ArrayList<>();
@@ -172,6 +179,9 @@ public class AuthController
             // Base64 để tương thích với giao thức Server hiện tại.
             String encodedPassword =
                     encodePassword(password);
+
+            savedUsername = username;
+            savedEncodedPassword = encodedPassword;
 
             /*
              * Cú pháp chính xác từ ClientHandler:
@@ -374,6 +384,12 @@ public class AuthController
 
     private void finishLogout() {
 
+        stopReconnectTimer();
+        savedUsername = "";
+        savedEncodedPassword = "";
+        isReconnecting = false;
+        reconnectAttempts = 0;
+
         authenticated = false;
         logoutRequested = false;
 
@@ -497,6 +513,20 @@ public class AuthController
             return;
         }
 
+        if (isReconnecting && !savedUsername.isEmpty() && !savedEncodedPassword.isEmpty()) {
+            if (chatFrame != null) {
+                chatFrame.showConnectionNotice("Đã kết nối lại Server. Đang tự động xác thực phiên...", true);
+            }
+            // Tự động đăng nhập lại bằng thông tin phiên đã lưu
+            String request = Protocol.build(
+                    Protocol.LOGIN,
+                    savedUsername,
+                    savedEncodedPassword
+            );
+            connection.send(request);
+            return;
+        }
+
         showAuthStatus(
                 "Đã kết nối đến Server.",
                 true
@@ -564,8 +594,28 @@ public class AuthController
         if (type.equals(Protocol.LOGIN_SUCCESS)) {
 
             authenticated = true;
-
             logoutRequested = false;
+
+            if (isReconnecting && chatFrame != null) {
+                stopReconnectTimer();
+                isReconnecting = false;
+                reconnectAttempts = 0;
+
+                chatFrame.setBusy(false);
+                chatFrame.showConnectionNotice("Đã kết nối lại thành công! Bạn có thể tải lại lịch sử phòng.", true);
+                chatFrame.onReconnected();
+
+                // Đồng bộ lại danh sách phòng, thành viên và phòng hiện tại
+                sendProtocol(Protocol.build(Protocol.GET_ROOMS));
+                sendProtocol(Protocol.build(Protocol.JOIN_ROOM, chatFrame.getCurrentRoom()));
+                sendProtocol(Protocol.build(Protocol.GET_USERS));
+                sendProtocol(Protocol.build(Protocol.GET_MY_ROLE));
+                return;
+            }
+
+            stopReconnectTimer();
+            isReconnecting = false;
+            reconnectAttempts = 0;
 
             // Ẩn màn hình đăng nhập sau khi xác thực thành công.
             loginFrame.loginSucceeded(payload);
@@ -706,13 +756,14 @@ public class AuthController
         // Trường hợp mất mạng bất ngờ trong lúc chat.
         if (authenticated && chatFrame != null) {
 
-            chatFrame.setBusy(false);
+            chatFrame.setBusy(true);
 
             chatFrame.showConnectionNotice(
-                    "Kết nối đến Server đã bị ngắt.",
+                    "Mất kết nối mạng. Đang tự động kết nối lại...",
                     false
             );
 
+            startReconnectTimer();
             return;
         }
 
@@ -726,6 +777,50 @@ public class AuthController
 
         if (registerFrame != null) {
             registerFrame.setBusy(false);
+        }
+    }
+
+    private void startReconnectTimer() {
+        if (reconnectTimer != null && reconnectTimer.isRunning()) {
+            return;
+        }
+        isReconnecting = true;
+        reconnectAttempts = 0;
+
+        reconnectTimer = new javax.swing.Timer(3000, e -> attemptReconnect());
+        reconnectTimer.setRepeats(true);
+        reconnectTimer.start();
+    }
+
+    private void attemptReconnect() {
+        if (shuttingDown || logoutRequested || !authenticated) {
+            stopReconnectTimer();
+            return;
+        }
+
+        reconnectAttempts++;
+        if (chatFrame != null) {
+            chatFrame.showConnectionNotice(
+                    "Mất kết nối mạng. Đang tự động kết nối lại (lần " + reconnectAttempts + ")...",
+                    false
+            );
+        }
+
+        try {
+            if (connection != null) {
+                connection.close();
+            }
+            connection = new ClientConnection(serverHost, serverPort, this);
+            connection.connect();
+        } catch (Exception ex) {
+            // Sẽ thử lại ở nhịp Timer tiếp theo
+        }
+    }
+
+    private void stopReconnectTimer() {
+        if (reconnectTimer != null) {
+            reconnectTimer.stop();
+            reconnectTimer = null;
         }
     }
 
@@ -897,10 +992,24 @@ public class AuthController
 
             UITheme.install();
 
+            // Mặc định kết nối tới Server qua IP ZeroTier: 10.148.92.193
+            // Có thể truyền IP qua tham số dòng lệnh args[0] hoặc -Dserver.host=...
+            String host = (args != null && args.length > 0 && !args[0].isBlank())
+                    ? args[0].trim()
+                    : System.getProperty("server.host", "10.148.92.193");
+
+            int port = 5000;
+            if (args != null && args.length > 1) {
+                try {
+                    port = Integer.parseInt(args[1].trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+
             AuthController controller =
                     new AuthController(
-                            "127.0.0.1",
-                            5000
+                            host,
+                            port
                     );
 
             controller.start();
