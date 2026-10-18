@@ -71,6 +71,17 @@ public class ClientManager {
                 key
         );
     }
+
+    /**
+     * Lấy ClientHandler của một người dùng theo username nếu đang online.
+     * Trả về null nếu không tìm thấy hoặc người dùng đã offline.
+     */
+    public ClientHandler getClient(String username) {
+        if (username == null) {
+            return null;
+        }
+        return onlineClients.get(username.toLowerCase(Locale.ROOT));
+    }
     
     // ==========================================================
 // GỬI THÔNG ĐIỆP ĐẾN TẤT CẢ CLIENT ĐANG ONLINE

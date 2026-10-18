@@ -165,22 +165,31 @@ public class RoomManager {
             String roomName,
             String message) {
 
+        broadcastExcept(roomName, message, null);
+    }
+
+    /**
+     * Broadcast message tới toàn bộ thành viên trong phòng
+     * ngoại trừ một client cụ thể (thường là người gửi sự kiện).
+     */
+    public void broadcastExcept(
+            String roomName,
+            String message,
+            ClientHandler excludeClient) {
+
         String key = getExactRoomKey(roomName);
 
         Set<ClientHandler> members =
                 rooms.get(key);
 
-
         if (members == null) {
             return;
         }
 
-
-        for (
-                ClientHandler client
-                : members
-        ) {
-
+        for (ClientHandler client : members) {
+            if (excludeClient != null && client == excludeClient) {
+                continue;
+            }
             client.send(message);
         }
     }
@@ -254,6 +263,29 @@ public class RoomManager {
 
 
     /**
+     * Lấy tập hợp ClientHandler trong phòng.
+     */
+    public Set<ClientHandler> getClients(String roomName) {
+        String key = getExactRoomKey(roomName);
+        Set<ClientHandler> members = rooms.get(key);
+        if (members == null) {
+            return Collections.emptySet();
+        }
+        return new java.util.HashSet<>(members);
+    }
+
+    /**
+     * Xóa phòng khỏi danh sách phòng hoạt động.
+     */
+    public boolean removeRoom(String roomName) {
+        String key = getExactRoomKey(roomName);
+        if (key == null) {
+            return false;
+        }
+        return rooms.remove(key) != null;
+    }
+
+    /**
      * Xóa Client khỏi toàn bộ phòng.
      */
     public void removeFromAllRooms(
@@ -267,4 +299,4 @@ public class RoomManager {
             members.remove(client);
         }
     }
-}
+}

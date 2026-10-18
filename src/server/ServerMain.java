@@ -6,12 +6,16 @@ package server;
 
 import common.EncodingUtil;
 import database.DatabaseInitializer;
-import database.RoomDAO;
 import database.MessageDAO;
+import database.PrivateMessageDAO;
+import database.ReactionDAO;
+import database.RoomDAO;
 
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * ServerMain:
@@ -26,6 +30,13 @@ import java.net.Socket;
 public class ServerMain {
 
     private static final int PORT = 5000;
+
+
+    /** Trả về thời gian hiện tại định dạng [HH:mm:ss]. */
+    private static String now() {
+        return LocalDateTime.now()
+                .format(DateTimeFormatter.ofPattern("[yyyy-MM-dd HH:mm:ss]"));
+    }
 
 
     public static void main(String[] args) {
@@ -78,6 +89,12 @@ public class ServerMain {
         
         // DAO lưu và đọc lịch sử tin nhắn.
         MessageDAO messageDAO = new MessageDAO();
+
+        // DAO quản lý cảm xúc tin nhắn.
+        ReactionDAO reactionDAO = new ReactionDAO();
+
+        // DAO quản lý tin nhắn riêng tư 1-1.
+        PrivateMessageDAO privateMessageDAO = new PrivateMessageDAO();
 
 
         // =====================================================
@@ -167,7 +184,7 @@ public class ServerMain {
 
 
                 System.out.println(
-                        "[SERVER] Client kết nối từ: "
+                        now() + " [SERVER] Client kết nối từ: "
                         + socket.getInetAddress()
                         + ":"
                         + socket.getPort()
@@ -181,7 +198,9 @@ public class ServerMain {
                                 roomManager,
                                 userDAO,
                                 roomDAO,
-                                messageDAO
+                                messageDAO,
+                                reactionDAO,
+                                privateMessageDAO
                         );
 
 
@@ -195,7 +214,7 @@ public class ServerMain {
 
 
                 System.out.println(
-                        "[SERVER] Đã tạo Thread cho Client."
+                        now() + " [SERVER] Đã tạo Thread cho Client."
                 );
             }
 
