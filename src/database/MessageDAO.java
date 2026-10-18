@@ -32,6 +32,9 @@ import java.util.List;
  */
 
 public class MessageDAO {
+    // Nội dung hiển thị sau khi tin nhắn được thu hồi.
+    public static final String RECALLED_CONTENT = "[Tin nhắn đã được thu hồi]";
+
    // Số tin nhắn tối đa trong một trang.
     private static final int DEFAULT_PAGE_SIZE = 50;
 
@@ -62,9 +65,10 @@ public class MessageDAO {
                     sender_id,
                     sender_username,
                     sender_display_name,
-                    content
+                    content,
+                    reply_to_id
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """;
 
         // Dùng cùng một Connection cho thao tác INSERT
@@ -91,6 +95,11 @@ public class MessageDAO {
                         5,
                         message.getContent()
                 );
+                if (message.getReplyToId() > 0) {
+                    statement.setInt(6, message.getReplyToId());
+                } else {
+                    statement.setNull(6, java.sql.Types.INTEGER);
+                }
 
                 int affectedRows = statement.executeUpdate();
 
@@ -199,13 +208,16 @@ public class MessageDAO {
 
         String sql = """
                 SELECT
-                    id,
-                    room_id,
-                    sender_id,
-                    sender_username,
-                    sender_display_name,
-                    content,
-                    sent_at
+                    m.id,
+                    m.room_id,
+                    m.sender_id,
+                    m.sender_username,
+                    m.sender_display_name,
+                    m.content,
+                    m.sent_at,
+                    m.reply_to_id,
+                    orig.sender_display_name AS reply_sender_display_name,
+                    orig.content AS reply_snippet
                 FROM (
                     SELECT
                         id,
@@ -214,13 +226,15 @@ public class MessageDAO {
                         sender_username,
                         sender_display_name,
                         content,
-                        sent_at
+                        sent_at,
+                        reply_to_id
                     FROM messages
                     WHERE room_id = ?
                     ORDER BY id DESC
                     LIMIT ?
-                )
-                ORDER BY id ASC
+                ) m
+                LEFT JOIN messages orig ON m.reply_to_id = orig.id
+                ORDER BY m.id ASC
                 """;
 
         List<Message> messages = new ArrayList<>();
@@ -282,13 +296,16 @@ public class MessageDAO {
 
         String sql = """
                 SELECT
-                    id,
-                    room_id,
-                    sender_id,
-                    sender_username,
-                    sender_display_name,
-                    content,
-                    sent_at
+                    m.id,
+                    m.room_id,
+                    m.sender_id,
+                    m.sender_username,
+                    m.sender_display_name,
+                    m.content,
+                    m.sent_at,
+                    m.reply_to_id,
+                    orig.sender_display_name AS reply_sender_display_name,
+                    orig.content AS reply_snippet
                 FROM (
                     SELECT
                         id,
@@ -297,14 +314,16 @@ public class MessageDAO {
                         sender_username,
                         sender_display_name,
                         content,
-                        sent_at
+                        sent_at,
+                        reply_to_id
                     FROM messages
                     WHERE room_id = ?
                       AND id < ?
                     ORDER BY id DESC
                     LIMIT ?
-                )
-                ORDER BY id ASC
+                ) m
+                LEFT JOIN messages orig ON m.reply_to_id = orig.id
+                ORDER BY m.id ASC
                 """;
 
         List<Message> messages = new ArrayList<>();
@@ -455,6 +474,123 @@ public class MessageDAO {
         return 0;
     }
 
+    // =====================================================
+    // 5.2. TÌM TIN NHẮN THEO ID & THU HỒI TIN NHẮN
+    // =====================================================
+
+    /**
+     * Tìm tin nhắn theo ID.
+     */
+    public Message findById(int id) throws SQLException {
+        String sql = """
+                SELECT
+                    m.id,
+                    m.room_id,
+                    m.sender_id,
+                    m.sender_username,
+                    m.sender_display_name,
+                    m.content,
+                    m.sent_at,
+                    m.reply_to_id,
+                    orig.sender_display_name AS reply_sender_display_name,
+                    orig.content AS reply_snippet
+                FROM messages m
+                LEFT JOIN messages orig ON m.reply_to_id = orig.id
+                WHERE m.id = ?
+                LIMIT 1
+                """;
+
+        try (Connection connection = DatabaseConnection.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+
+            statement.setInt(1, id);
+
+            try (ResultSet rs = statement.executeQuery()) {
+                if (rs.next()) {
+                    return mapRowToMessage(rs);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Lấy số giây đã trôi qua kể từ khi tin nhắn được gửi (tính chuẩn UTC theo SQLite).
+     */
+    public int getMessageAgeSeconds(int messageId) throws SQLException {
+        String sql = """
+                SELECT (strftime('%s', 'now') - strftime('%s', sent_at)) AS diff_sec
+                FROM messages
+                WHERE id = ?
+                """;
+
+        try (Connection connection = DatabaseConnection.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+
+            statement.setInt(1, messageId);
+
+            try (ResultSet rs = statement.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("diff_sec");
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Thu hồi tin nhắn trong cơ sở dữ liệu.
+     * - Cập nhật nội dung thành "[Tin nhắn đã được thu hồi]"
+     * - Xóa toàn bộ cảm xúc liên quan trong message_reactions
+     * - Sử dụng Transaction để đảm bảo tính toàn vẹn.
+     *
+     * @param messageId ID tin nhắn cần thu hồi
+     * @param senderId  ID người gửi (phải trùng khớp để đảm bảo chính chủ)
+     * @return true nếu thu hồi thành công, false nếu không hợp lệ
+     */
+    public boolean recallMessage(int messageId, int senderId) throws SQLException {
+        String updateSql = """
+                UPDATE messages
+                SET content = ?
+                WHERE id = ? AND sender_id = ? AND content <> ?
+                """;
+
+        try (Connection connection = DatabaseConnection.getConnection()) {
+            connection.setAutoCommit(false);
+
+            int updated = 0;
+            try (PreparedStatement statement = connection.prepareStatement(updateSql)) {
+                statement.setString(1, RECALLED_CONTENT);
+                statement.setInt(2, messageId);
+                statement.setInt(3, senderId);
+                statement.setString(4, RECALLED_CONTENT);
+
+                updated = statement.executeUpdate();
+            }
+
+            if (updated > 0) {
+                // Xóa cảm xúc của tin nhắn đã thu hồi
+                String deleteReactionsSql = """
+                        DELETE FROM message_reactions
+                        WHERE message_id = ?
+                        """;
+
+                try (PreparedStatement rxStmt = connection.prepareStatement(deleteReactionsSql)) {
+                    rxStmt.setInt(1, messageId);
+                    rxStmt.executeUpdate();
+                }
+
+                connection.commit();
+                return true;
+            } else {
+                connection.rollback();
+                return false;
+            }
+        }
+    }
+
 
     // =====================================================
     // 6. CHUYỂN MỘT DÒNG SQL THÀNH ĐỐI TƯỢNG MESSAGE
@@ -469,7 +605,7 @@ public class MessageDAO {
     private Message mapRowToMessage(ResultSet rs)
             throws SQLException {
 
-        return new Message(
+        Message msg = new Message(
                 rs.getInt("id"),
                 rs.getInt("room_id"),
                 rs.getInt("sender_id"),
@@ -478,6 +614,21 @@ public class MessageDAO {
                 rs.getString("content"),
                 rs.getString("sent_at")
         );
+
+        try {
+            int replyTo = rs.getInt("reply_to_id");
+            if (!rs.wasNull() && replyTo > 0) {
+                msg.setReplyToId(replyTo);
+                try {
+                    msg.setReplySenderDisplayName(rs.getString("reply_sender_display_name"));
+                    msg.setReplySnippet(rs.getString("reply_snippet"));
+                } catch (SQLException ignored) {
+                }
+            }
+        } catch (SQLException ignored) {
+        }
+
+        return msg;
     }
 
 

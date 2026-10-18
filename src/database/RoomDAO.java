@@ -530,4 +530,85 @@ public class RoomDAO {
         return rooms;
     }
 
+    // ==========================================================
+    // XÓA THÀNH VIÊN KHỎI PHÒNG (KHI BỊ KICK)
+    // ==========================================================
+
+    /**
+     * Xóa bản ghi thành viên khỏi phòng chat khi bị Kick.
+     *
+     * @param roomName tên phòng
+     * @param userId ID tài khoản bị kick
+     * @return true nếu đã xóa thành công bản ghi, false nếu không tìm thấy
+     * @throws SQLException nếu truy vấn Database thất bại
+     */
+    public boolean removeMember(
+            String roomName,
+            int userId) throws SQLException {
+
+        if (roomName == null || roomName.trim().isEmpty() || userId <= 0) {
+            return false;
+        }
+
+        String sql = """
+                DELETE FROM room_members
+                WHERE room_id = (
+                    SELECT id
+                    FROM rooms
+                    WHERE name = ?
+                )
+                AND user_id = ?
+                """;
+
+        try (Connection connection =
+                     DatabaseConnection.getConnection();
+             PreparedStatement statement =
+                     connection.prepareStatement(sql)) {
+
+            statement.setString(1, roomName.trim());
+            statement.setInt(2, userId);
+
+            return statement.executeUpdate() > 0;
+        }
+    }
+
+    // ==========================================================
+    // XÓA PHÒNG KHỎI DATABASE
+    // ==========================================================
+
+    /**
+     * Xóa phòng chat khỏi Database (sẽ tự động CASCADE xóa room_members và messages nếu có).
+     *
+     * @param roomName tên phòng cần xóa
+     * @return true nếu xóa thành công, false nếu không tìm thấy phòng
+     * @throws SQLException nếu thao tác Database thất bại
+     */
+    public boolean deleteRoom(String roomName) throws SQLException {
+        if (roomName == null || roomName.trim().isEmpty()) {
+            return false;
+        }
+
+        int roomId;
+        try {
+            roomId = findRoomIdByName(roomName.trim());
+        } catch (SQLException e) {
+            return false;
+        }
+
+        String sql = """
+                DELETE FROM rooms
+                WHERE id = ?
+                """;
+
+        try (Connection connection =
+                     DatabaseConnection.getConnection();
+             PreparedStatement statement =
+                     connection.prepareStatement(sql)) {
+
+            statement.setInt(1, roomId);
+            return statement.executeUpdate() > 0;
+        }
+    }
+
 }
+

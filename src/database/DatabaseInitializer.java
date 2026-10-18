@@ -52,7 +52,7 @@ public final class DatabaseInitializer {
                     password_salt TEXT NOT NULL,
                     password_iterations INTEGER NOT NULL,
                     role TEXT NOT NULL DEFAULT 'USER',
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                 )
                 """;
 
@@ -67,7 +67,7 @@ public final class DatabaseInitializer {
                 CREATE TABLE IF NOT EXISTS rooms (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                 )
                 """;
 
@@ -88,7 +88,7 @@ public final class DatabaseInitializer {
                     role TEXT NOT NULL DEFAULT 'MEMBER'
                         CHECK(role IN ('OWNER', 'ADMIN', 'MEMBER')),
         
-                    joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    joined_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         
                     PRIMARY KEY (room_id, user_id),
         
@@ -124,7 +124,9 @@ public final class DatabaseInitializer {
                     content TEXT NOT NULL
                         CHECK(length(content) BETWEEN 1 AND 500),
         
-                    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    reply_to_id INTEGER,
+
+                    sent_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         
                     FOREIGN KEY (room_id)
                         REFERENCES rooms(id)
@@ -132,13 +134,43 @@ public final class DatabaseInitializer {
         
                     FOREIGN KEY (sender_id)
                         REFERENCES users(id)
-                        ON DELETE RESTRICT
+                        ON DELETE RESTRICT,
+
+                    FOREIGN KEY (reply_to_id)
+                        REFERENCES messages(id)
+                        ON DELETE SET NULL
                 )
                 """;
 
 
         // =====================================================
-        // 5. CHỈ MỤC PHỤC VỤ TRUY VẤN LỊCH SỬ
+        // 5. BẢNG MESSAGE_REACTIONS
+        //
+        // Mỗi bản ghi: ai (user_id) thả emoji nào (emoji)
+        // cho tin nhắn nào (message_id).
+        // PRIMARY KEY (message_id, user_id) đảm bảo mỗi người
+        // chỉ có 1 reaction trên mỗi tin; thả lại sẽ thay emoji.
+        // =====================================================
+
+        String createReactionsTable = """
+                CREATE TABLE IF NOT EXISTS message_reactions (
+                    message_id INTEGER NOT NULL,
+                    user_id    INTEGER NOT NULL,
+                    emoji      TEXT    NOT NULL
+                        CHECK(emoji IN ('\u2764\uFE0F', '\ud83d\ude02', '\ud83d\udc4d')),
+                    reacted_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    PRIMARY KEY (message_id, user_id),
+                    FOREIGN KEY (message_id)
+                        REFERENCES messages(id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (user_id)
+                        REFERENCES users(id)
+                        ON DELETE CASCADE
+                )
+                """;
+
+        // =====================================================
+        // 6. CHỈ MỤC PHỤC VỤ TRUY VẤN LỊCH SỬ
         // =====================================================
 
         String createMessageHistoryIndex = """
@@ -152,6 +184,12 @@ public final class DatabaseInitializer {
                 ON messages(sender_id)
                 """;
 
+        // Tìm kiếm reaction theo tin nhắn.
+        String createReactionIndex = """
+                CREATE INDEX IF NOT EXISTS idx_reactions_message_id
+                ON message_reactions(message_id)
+                """;
+
         // =====================================================
         // CHỈ MỤC PHỤC VỤ TRA CỨU THÀNH VIÊN THEO TÀI KHOẢN
         // =====================================================
@@ -161,7 +199,41 @@ public final class DatabaseInitializer {
                 """;
 
         // =====================================================
-        // 6. THỰC HIỆN KHỞI TẠO
+        // 7. BẢNG TIN NHẮN RIÊNG TƯ (PRIVATE MESSAGES 1-1)
+        // =====================================================
+        String createPrivateMessagesTable = """
+                CREATE TABLE IF NOT EXISTS private_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_id INTEGER NOT NULL,
+                    sender_username TEXT NOT NULL COLLATE NOCASE,
+                    sender_display_name TEXT NOT NULL,
+                    receiver_id INTEGER NOT NULL,
+                    receiver_username TEXT NOT NULL COLLATE NOCASE,
+                    receiver_display_name TEXT NOT NULL,
+                    content TEXT NOT NULL
+                        CHECK(length(content) BETWEEN 1 AND 500),
+                    sent_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    FOREIGN KEY (sender_id)
+                        REFERENCES users(id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (receiver_id)
+                        REFERENCES users(id)
+                        ON DELETE RESTRICT
+                )
+                """;
+
+        String createPrivateMessagesIndex = """
+                CREATE INDEX IF NOT EXISTS idx_private_messages_pair
+                ON private_messages(sender_username, receiver_username, id)
+                """;
+
+        String createMessageReplyIndex = """
+                CREATE INDEX IF NOT EXISTS idx_messages_reply_to
+                ON messages(reply_to_id)
+                """;
+
+        // =====================================================
+        // 8. THỰC HIỆN KHỞI TẠO
         // =====================================================
 
         try (Connection connection =
@@ -178,11 +250,25 @@ public final class DatabaseInitializer {
                 // Bảng vai trò theo từng phòng.
                 statement.executeUpdate(createRoomMembersTable);
                 statement.executeUpdate(createMessagesTable);
+                // Đảm bảo cột reply_to_id tồn tại nếu database đã được tạo trước đó
+                try {
+                    statement.executeUpdate("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER REFERENCES messages(id)");
+                } catch (SQLException ignored) {
+                }
+                // Bảng cảm xúc tin nhắn (reactions).
+                statement.executeUpdate(createReactionsTable);
+                // Bảng tin nhắn riêng tư 1-1.
+                statement.executeUpdate(createPrivateMessagesTable);
                 // Các chỉ mục phục vụ lịch sử tin nhắn.
                 statement.executeUpdate(createMessageHistoryIndex);
                 statement.executeUpdate(createMessageSenderIndex);
+                statement.executeUpdate(createMessageReplyIndex);
+                // Chỉ mục tìm kiếm reaction theo tin nhắn.
+                statement.executeUpdate(createReactionIndex);
                 // Chỉ mục tra cứu thành viên theo tài khoản.
                 statement.executeUpdate(createRoomMemberUserIndex);
+                // Chỉ mục tra cứu tin nhắn riêng 1-1.
+                statement.executeUpdate(createPrivateMessagesIndex);
             }
 
             // Nếu cấu trúc bảng được tạo thành công,
@@ -210,6 +296,14 @@ public final class DatabaseInitializer {
 
             System.out.println(
                     "[DATABASE] Da khoi tao chi muc lich su."
+            );
+
+            System.out.println(
+                    "[DATABASE] Da khoi tao bang message_reactions."
+            );
+
+            System.out.println(
+                    "[DATABASE] Da khoi tao bang private_messages."
             );
 
             System.out.println(
