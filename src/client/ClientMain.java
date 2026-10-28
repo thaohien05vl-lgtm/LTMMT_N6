@@ -962,8 +962,12 @@ public class ClientMain {
 
             case Protocol.LOGIN_SUCCESS:
 
-                if (parts.length >= 2) {
-
+                if (parts.length >= 3) {
+                    System.out.println(
+                            "[LOGIN] "
+                            + parts[2]
+                    );
+                } else if (parts.length >= 2) {
                     System.out.println(
                             "[LOGIN] "
                             + parts[1]

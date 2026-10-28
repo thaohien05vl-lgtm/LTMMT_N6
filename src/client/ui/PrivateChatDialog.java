@@ -445,21 +445,23 @@ public class PrivateChatDialog extends JFrame {
             }
             String trimmed = raw.trim();
 
-            if (trimmed.length() >= 16
-                    && (trimmed.charAt(10) == ' ' || trimmed.charAt(10) == 'T')
-                    && !trimmed.endsWith("Z") && !trimmed.contains("+")) {
-                return trimmed.substring(11, 16);
+            if (trimmed.length() == 5 && trimmed.charAt(2) == ':') {
+                return trimmed;
             }
 
             try {
                 String isoString = trimmed.replace(" ", "T");
-                if (!isoString.endsWith("Z") && !isoString.contains("+")) {
+                if (!isoString.endsWith("Z") && !isoString.contains("+") && isoString.length() >= 19) {
                     isoString += "Z";
                 }
                 Instant instant = Instant.parse(isoString);
                 return LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
                         .format(DateTimeFormatter.ofPattern("HH:mm"));
             } catch (Exception ignored) {
+            }
+
+            if (trimmed.length() >= 16) {
+                return trimmed.substring(11, 16);
             }
 
             return trimmed;

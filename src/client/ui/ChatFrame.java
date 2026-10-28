@@ -137,6 +137,8 @@ public class ChatFrame extends JFrame {
     private HintTextField searchField;
     private JLabel brandLabel;
     private JLabel taglineLabel;
+    private JLabel headerNameLabel;
+    private AvatarView headerAvatarView;
 
     private JButton sendButton;
     private JButton searchButton;
@@ -188,6 +190,12 @@ public class ChatFrame extends JFrame {
 
     /** Quản lý các cửa sổ trò chuyện riêng 1-1 (key = username viết thường). */
     private final Map<String, PrivateChatDialog> privateChatWindows = new java.util.concurrent.ConcurrentHashMap<>();
+
+    // ==========================================================
+    // OFFLINE OUTBOX — TIN NHẮN CHỜ GỬI NGOẠI TUYẾN (ZALO / MESSENGER STYLE)
+    // ==========================================================
+    private int nextTempId = -1000;
+    private final Map<Integer, ClientOutbox.OutboxItem> pendingOutboxRows = new HashMap<>();
 
     // ==========================================================
     // REPLY — TRẢ LỜI TIN NHẮN CỤ THỂ
@@ -311,11 +319,22 @@ public class ChatFrame extends JFrame {
     }
 
     /**
-     * Tùy chọn: cho phép controller báo tên hiển thị của người dùng
-     * để nhận ra tin nhắn của mình trong lịch sử (HISTORY).
+     * Cho phép controller báo tên hiển thị của người dùng
+     * để nhận ra tin nhắn của mình trong lịch sử (HISTORY)
+     * và cập nhật nhãn tài khoản trên thanh tiêu đề.
      */
     public void setDisplayName(String displayName) {
-        this.myDisplayName = displayName;
+        if (displayName == null || displayName.isBlank()) {
+            return;
+        }
+        this.myDisplayName = displayName.trim();
+        if (headerNameLabel != null) {
+            headerNameLabel.setText(this.myDisplayName);
+        }
+        if (headerAvatarView != null) {
+            headerAvatarView.setName(this.myDisplayName);
+            headerAvatarView.repaint();
+        }
     }
 
     // ==========================================================
@@ -401,10 +420,10 @@ public class ChatFrame extends JFrame {
         );
 
         // --- Tài khoản + đăng xuất ---
-        JLabel nameLabel = new JLabel(username);
+        headerNameLabel = new JLabel(myDisplayName != null ? myDisplayName : username);
 
-        nameLabel.setFont(AuthUI.font(Font.BOLD, 13));
-        nameLabel.setForeground(AuthUI.TEXT_COLOR);
+        headerNameLabel.setFont(AuthUI.font(Font.BOLD, 13));
+        headerNameLabel.setForeground(AuthUI.TEXT_COLOR);
 
         JLabel onlineLabel = new JLabel("Đang trực tuyến");
 
@@ -418,14 +437,15 @@ public class ChatFrame extends JFrame {
                 new BoxLayout(accountTexts, BoxLayout.Y_AXIS)
         );
 
-        accountTexts.add(nameLabel);
+        accountTexts.add(headerNameLabel);
         accountTexts.add(onlineLabel);
 
         JPanel chip = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
 
         chip.setOpaque(false);
 
-        chip.add(new AvatarView(username, 38, true));
+        headerAvatarView = new AvatarView(myDisplayName != null ? myDisplayName : username, 38, true);
+        chip.add(headerAvatarView);
         chip.add(accountTexts);
 
         logoutButton = AuthUI.createButton(
@@ -1720,6 +1740,70 @@ public class ChatFrame extends JFrame {
         setBusy(false);
         showConnectionNotice("Mạng đã được khôi phục. Đang tự động làm mới lịch sử phòng...", true);
         reloadRoomHistory();
+        renderPendingOutboxMessages(currentRoom);
+        flushOutbox();
+    }
+
+    /**
+     * Nạp lại các tin nhắn còn đang chờ gửi từ file ổ cứng của Client vào phòng hiện tại.
+     */
+    private void renderPendingOutboxMessages(String roomName) {
+        if (roomName == null || roomName.isBlank()) {
+            return;
+        }
+        List<ClientOutbox.OutboxItem> list = ClientOutbox.getItemsForRoom(username, roomName);
+        for (ClientOutbox.OutboxItem it : list) {
+            if (messageRowMap.containsKey(it.tempId)) {
+                continue;
+            }
+            pendingOutboxRows.put(it.tempId, it);
+            if (it.replyToId > 0) {
+                replyInfoMap.put(it.tempId, new ReplyInfo(it.replyToId, it.replySender, it.replySnippet));
+            }
+            appendChatMessage(
+                    it.tempId,
+                    myDisplayName != null ? myDisplayName : username,
+                    "@" + username,
+                    "Đang gửi...",
+                    it.content,
+                    true
+            );
+        }
+    }
+
+    /**
+     * Tự động gửi bù các tin nhắn từ ổ cứng lên Server khi mạng được kết nối lại.
+     */
+    public synchronized void flushOutbox() {
+        if (!controller.isConnected()) {
+            return;
+        }
+
+        List<ClientOutbox.OutboxItem> list = ClientOutbox.getItemsForRoom(username, currentRoom);
+        if (list.isEmpty()) {
+            return;
+        }
+
+        showConnectionNotice("Đang tự động gửi lại các tin nhắn đang chờ...", true);
+
+        for (ClientOutbox.OutboxItem it : list) {
+            if (it.replyToId > 0) {
+                controller.sendProtocol(
+                        Protocol.build(
+                                Protocol.REPLY_MESSAGE,
+                                String.valueOf(it.replyToId),
+                                it.content
+                        )
+                );
+            } else {
+                controller.sendProtocol(
+                        Protocol.build(
+                                Protocol.SEND_MESSAGE,
+                                it.content
+                        )
+                );
+            }
+        }
     }
 
     /**
@@ -2206,6 +2290,50 @@ public class ChatFrame extends JFrame {
                     false
             );
 
+            return;
+        }
+
+        // ==========================================================
+        // XỬ LÝ KHI MẤT MẠNG (OFFLINE OUTBOX GIỐNG MESSENGER / ZALO)
+        // ==========================================================
+        if (!controller.isConnected()) {
+            int tempId = nextTempId--;
+            ClientOutbox.OutboxItem item = new ClientOutbox.OutboxItem(
+                    tempId,
+                    username,
+                    currentRoom,
+                    replyTargetMessageId,
+                    replyTargetSender,
+                    replyTargetSnippet,
+                    content,
+                    currentTime()
+            );
+
+            ClientOutbox.addItem(username, item);
+            pendingOutboxRows.put(tempId, item);
+
+            if (replyTargetMessageId > 0) {
+                replyInfoMap.put(tempId, new ReplyInfo(replyTargetMessageId, replyTargetSender, replyTargetSnippet));
+            }
+
+            appendChatMessage(
+                    tempId,
+                    myDisplayName != null ? myDisplayName : username,
+                    "@" + username,
+                    "Đang gửi...",
+                    content,
+                    true
+            );
+
+            cancelReply();
+            messageField.setText("");
+            stopSelfTyping();
+            messageField.requestFocusInWindow();
+
+            showConnectionNotice(
+                    "Đang mất mạng. Tin nhắn đã được lưu vào hàng đợi và sẽ tự động gửi khi có mạng lại...",
+                    false
+            );
             return;
         }
 
@@ -2724,6 +2852,27 @@ public class ChatFrame extends JFrame {
 
                     if (mine) {
                         myDisplayName = displayName;
+
+                        // Khớp với tin nhắn chờ trong Outbox nếu có để chuyển "Đang gửi..." thành thời gian thực
+                        Integer matchedTempId = null;
+                        for (Map.Entry<Integer, ClientOutbox.OutboxItem> entry : pendingOutboxRows.entrySet()) {
+                            if (content.equals(entry.getValue().content)) {
+                                matchedTempId = entry.getKey();
+                                break;
+                            }
+                        }
+
+                        if (matchedTempId != null) {
+                            ClientOutbox.removeByTempId(username, matchedTempId);
+                            pendingOutboxRows.remove(matchedTempId);
+                            MessageRow pendingRow = messageRowMap.remove(matchedTempId);
+                            if (pendingRow != null) {
+                                messageRowMap.put(msgId, pendingRow);
+                                pendingRow.markSent(msgId, currentTime());
+                                lastSentMineMessageRow = pendingRow;
+                                return;
+                            }
+                        }
                     }
 
                     appendChatMessage(
@@ -2792,6 +2941,9 @@ public class ChatFrame extends JFrame {
         if (type.equals(Protocol.HISTORY_END)) {
 
             if (payload.equals(currentRoom)) {
+
+                renderPendingOutboxMessages(currentRoom);
+                flushOutbox();
 
                 showStatus(
                         "Lịch sử đã được tải xong.",
@@ -3292,9 +3444,10 @@ public class ChatFrame extends JFrame {
             return false;
         }
 
-        return senderName.equalsIgnoreCase(username)
+        String s = senderName.trim();
+        return s.equalsIgnoreCase(username)
                 || (myDisplayName != null
-                && senderName.equals(myDisplayName));
+                && s.equalsIgnoreCase(myDisplayName.trim()));
     }
 
     private void appendChatMessage(
@@ -3639,28 +3792,32 @@ public class ChatFrame extends JFrame {
 
         String trimmed = rawTime.trim();
 
-        /*
-         * Nếu chuỗi thời gian đã là yyyy-MM-dd HH:mm:ss (được lưu theo localtime)
-         * thì lấy trực tiếp HH:mm để không bị cộng lệch múi giờ.
-         */
-        if (trimmed.length() >= 16
-                && (trimmed.charAt(10) == ' ' || trimmed.charAt(10) == 'T')
-                && !trimmed.endsWith("Z") && !trimmed.contains("+")) {
-            return trimmed.substring(11, 16);
+        // Nếu đã là định dạng HH:mm (như tin nhắn realtime gửi qua currentTime()), giữ nguyên
+        if (trimmed.length() == 5 && trimmed.charAt(2) == ':') {
+            return trimmed;
         }
 
         /*
-         * Dự phòng nếu là chuỗi UTC (có đuôi Z hoặc múi giờ ISO).
+         * Xử lý thời gian từ Database SQLite (CURRENT_TIMESTAMP theo chuẩn UTC: yyyy-MM-dd HH:mm:ss)
+         * hoặc chuỗi chuẩn ISO (có Z hoặc offset múi giờ).
+         * Chuyển đổi về múi giờ địa phương của máy người dùng (ZoneId.systemDefault()).
          */
         try {
             String isoString = trimmed.replace(" ", "T");
-            if (!isoString.endsWith("Z") && !isoString.contains("+")) {
+            if (!isoString.endsWith("Z") && !isoString.contains("+") && isoString.length() >= 19) {
                 isoString += "Z";
             }
             java.time.Instant instant = java.time.Instant.parse(isoString);
             return LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
                     .format(DateTimeFormatter.ofPattern("HH:mm"));
         } catch (Exception ignored) {
+        }
+
+        /*
+         * Dự phòng nếu không parse được qua Instant, lấy HH:mm từ chuỗi
+         */
+        if (trimmed.length() >= 16) {
+            return trimmed.substring(11, 16);
         }
 
         return trimmed;
@@ -4210,7 +4367,7 @@ public class ChatFrame extends JFrame {
 
     private static final class AvatarView extends JComponent {
 
-        private final String name;
+        private String name;
         private final int size;
         private final boolean online;
 
@@ -4225,6 +4382,10 @@ public class ChatFrame extends JFrame {
             setPreferredSize(d);
             setMinimumSize(d);
             setMaximumSize(d);
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
 
         @Override
@@ -4438,11 +4599,11 @@ public class ChatFrame extends JFrame {
         private final Kind kind;
         private final String sender;
         private final String handle;
-        private final String time;
+        private String time;
         private String content;
 
         // Reaction, Recall & Reply
-        private final int messageId;
+        private int messageId;
         private final ReactCallback reactCallback;
         private final RecallCallback recallCallback;
         private final ReplyCallback replyCallback;
@@ -4585,6 +4746,15 @@ public class ChatFrame extends JFrame {
                 return;
             }
             this.seenByUsers.add(userName);
+            this.measuredWidth = -1;
+            revalidate();
+            repaint();
+        }
+
+        /** Đánh dấu tin nhắn đã được gửi bù thành công lên server, cập nhật thời gian thực */
+        void markSent(int realId, String realTime) {
+            this.messageId = realId;
+            this.time = realTime == null ? "" : realTime;
             this.measuredWidth = -1;
             revalidate();
             repaint();
@@ -5051,9 +5221,13 @@ public class ChatFrame extends JFrame {
             // Giờ gửi canh phải phía trên bong bóng.
             g2.setFont(META_FONT);
 
-            g2.setColor(AuthUI.MUTED_COLOR);
-
             String meta = "Bạn  ·  " + time;
+
+            if (time != null && time.contains("Đang gửi")) {
+                g2.setColor(new Color(255, 140, 0)); // Màu cam nổi bật trạng thái đang chờ gửi
+            } else {
+                g2.setColor(AuthUI.MUTED_COLOR);
+            }
 
             g2.drawString(
                     meta,
@@ -5066,6 +5240,12 @@ public class ChatFrame extends JFrame {
                 g2.setColor(AuthUI.isDarkMode() ? new Color(30, 38, 60) : new Color(230, 235, 245));
                 g2.fillRoundRect(bx, by, bubbleW, bubbleH, 18, 18);
                 g2.setColor(AuthUI.alpha(AuthUI.BORDER_COLOR, 150));
+                g2.drawRoundRect(bx, by, bubbleW - 1, bubbleH - 1, 18, 18);
+            } else if (time != null && time.contains("Đang gửi")) {
+                // Bong bóng mờ cam cho tin đang chờ gửi lúc mất mạng (Offline Outbox)
+                g2.setColor(AuthUI.isDarkMode() ? new Color(55, 45, 60) : new Color(255, 245, 240));
+                g2.fillRoundRect(bx, by, bubbleW, bubbleH, 18, 18);
+                g2.setColor(new Color(255, 150, 50, 160));
                 g2.drawRoundRect(bx, by, bubbleW - 1, bubbleH - 1, 18, 18);
             } else {
                 g2.setPaint(
@@ -5114,7 +5294,13 @@ public class ChatFrame extends JFrame {
                 contentTop += replyBoxH + 4;
             }
 
-            g2.setColor(isRecalled ? AuthUI.MUTED_COLOR : Color.WHITE);
+            if (isRecalled) {
+                g2.setColor(AuthUI.MUTED_COLOR);
+            } else if (time != null && time.contains("Đang gửi")) {
+                g2.setColor(AuthUI.isDarkMode() ? new Color(255, 230, 220) : AuthUI.TEXT_COLOR);
+            } else {
+                g2.setColor(Color.WHITE);
+            }
 
             drawLines(g2, bx + PAD_X, contentTop);
 

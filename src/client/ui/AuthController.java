@@ -596,6 +596,21 @@ public class AuthController
             authenticated = true;
             logoutRequested = false;
 
+            // Trích xuất displayName từ gói LOGIN_SUCCESS
+            // Hỗ trợ cả định dạng mới: LOGIN_SUCCESS|displayName|thông_điệp_chào
+            // Và định dạng cũ: LOGIN_SUCCESS|Xin chào <displayName>!
+            String extractedDisplayName = currentUsername;
+            String welcomeNotice = payload;
+            if (payload != null && !payload.isBlank()) {
+                if (payload.contains("|")) {
+                    String[] loginParts = payload.split("\\|", 2);
+                    extractedDisplayName = loginParts[0].trim();
+                    welcomeNotice = loginParts[1].trim();
+                } else if (payload.startsWith("Xin chào ") && payload.endsWith("!")) {
+                    extractedDisplayName = payload.substring("Xin chào ".length(), payload.length() - 1).trim();
+                }
+            }
+
             if (isReconnecting && chatFrame != null) {
                 stopReconnectTimer();
                 isReconnecting = false;
@@ -603,6 +618,7 @@ public class AuthController
 
                 chatFrame.setBusy(false);
                 chatFrame.showConnectionNotice("Đã kết nối lại thành công! Bạn có thể tải lại lịch sử phòng.", true);
+                chatFrame.setDisplayName(extractedDisplayName);
                 chatFrame.onReconnected();
 
                 // Đồng bộ lại danh sách phòng, thành viên và phòng hiện tại
@@ -618,7 +634,7 @@ public class AuthController
             reconnectAttempts = 0;
 
             // Ẩn màn hình đăng nhập sau khi xác thực thành công.
-            loginFrame.loginSucceeded(payload);
+            loginFrame.loginSucceeded(welcomeNotice);
             loginFrame.setVisible(false);
 
             // Đóng màn hình đăng ký nếu nó còn tồn tại.
@@ -632,6 +648,7 @@ public class AuthController
                     this,
                     currentUsername
             );
+            chatFrame.setDisplayName(extractedDisplayName);
 
             /*
              * Gắn ChatFrame vào đầu nhận thông điệp.
@@ -937,6 +954,10 @@ public class AuthController
 
     public boolean isAuthenticated() {
         return authenticated;
+    }
+
+    public boolean isConnected() {
+        return connection != null && connection.isConnected() && authenticated && !isReconnecting;
     }
 
     // ==========================================================
